@@ -1,0 +1,58 @@
+<Project>
+  <PropertyGroup>
+    <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
+  </PropertyGroup>
+
+  <!-- Compendium framework base packages — nuget.org pins. Update via Renovate.
+       Compendium.Abstractions.Storage is NOT pinned here: it lives in this repo
+       and is consumed via ProjectReference (domain-repo atomic-PR benefit). -->
+  <ItemGroup>
+    <PackageVersion Include="Compendium.Abstractions" Version="1.0.5-preview.1" />
+    <PackageVersion Include="Compendium.Core" Version="1.0.5-preview.1" />
+    <PackageVersion Include="Compendium.Multitenancy" Version="1.0.5-preview.1" />
+  </ItemGroup>
+
+  <!-- Build-time tooling -->
+  <ItemGroup>
+    <PackageVersion Include="MinVer" Version="7.0.0" />
+  </ItemGroup>
+
+  <!-- Production runtime (union of the source adapter repos; conflicts resolved highest) -->
+  <ItemGroup>
+    <PackageVersion Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="10.0.8" />
+    <PackageVersion Include="Microsoft.Extensions.Configuration.Abstractions" Version="9.0.16" />
+    <PackageVersion Include="Microsoft.Extensions.Options" Version="10.0.8" />
+    <PackageVersion Include="Microsoft.Extensions.Options.ConfigurationExtensions" Version="9.0.16" />
+    <PackageVersion Include="Microsoft.Extensions.Options.DataAnnotations" Version="9.0.16" />
+    <PackageVersion Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.8" />
+    <PackageVersion Include="Microsoft.Extensions.Logging.Console" Version="9.0.16" />
+    <PackageVersion Include="Microsoft.Extensions.Http" Version="9.0.16" />
+    <PackageVersion Include="AWSSDK.S3" Version="4.0.23.3" />
+  </ItemGroup>
+
+  <!-- Test stack (matches the framework's testing conventions exactly) -->
+  <ItemGroup>
+    <PackageVersion Include="xunit" Version="2.9.3" />
+    <PackageVersion Include="xunit.runner.visualstudio" Version="3.1.5" />
+    <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="18.5.1" />
+    <PackageVersion Include="FluentAssertions" Version="6.12.1" />
+    <PackageVersion Include="NSubstitute" Version="5.1.0" />
+    <PackageVersion Include="AutoFixture" Version="4.18.1" />
+    <PackageVersion Include="AutoFixture.Xunit2" Version="4.18.1" />
+    <PackageVersion Include="Bogus" Version="35.6.1" />
+    <PackageVersion Include="coverlet.collector" Version="10.0.0" />
+    <PackageVersion Include="RichardSzalay.MockHttp" Version="7.0.0" />
+    <PackageVersion Include="WireMock.Net" Version="1.6.9" />
+    <PackageVersion Include="Microsoft.Extensions.DependencyInjection" Version="10.0.8" />
+    <PackageVersion Include="Microsoft.Extensions.Configuration" Version="9.0.16" />
+    <PackageVersion Include="Microsoft.Extensions.Configuration.Binder" Version="9.0.16" />
+    <PackageVersion Include="Microsoft.Extensions.Logging" Version="10.0.8" />
+  </ItemGroup>
+
+  <!-- Container fixtures for integration tests (minio + postgres + supabase/storage-api). -->
+  <ItemGroup>
+    <PackageVersion Include="Testcontainers" Version="4.11.0" />
+    <PackageVersion Include="Testcontainers.Minio" Version="4.11.0" />
+    <PackageVersion Include="Testcontainers.PostgreSql" Version="4.11.0" />
+  </ItemGroup>
+</Project>
