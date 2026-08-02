@@ -72,8 +72,12 @@ jobs:
           NUGET_API_KEY: ${{ steps.nuget-login.outputs.NUGET_API_KEY || secrets.NUGET_API_KEY }}
         run: |
           if [ -z "$NUGET_API_KEY" ]; then
-            echo "::warning::Pas de credential nuget.org (OIDC KO et NUGET_API_KEY vide) — publish nuget.org skippe."
-            exit 0
+            echo "::error::Pas de credential nuget.org (OIDC KO et NUGET_API_KEY vide). Les consommateurs \
+          externes (Nexus CI, repos tenants) restaurent depuis nuget.org : une release qui n'y publie pas \
+          est un ECHEC, pas un skip — c'est exactement ce qui a caché v1.1.0-preview.3 jamais publiee \
+          (release SUCCESS, packages absents, PR Nexus #335 rouge en silence). Fix : policy Trusted \
+          Publishing SCOJH/compendium-storage+release.yml (owner sachahennaut) ou secret NUGET_API_KEY."
+            exit 1
           fi
           dotnet nuget push "artifacts/*.nupkg" \
             --api-key "$NUGET_API_KEY" \
