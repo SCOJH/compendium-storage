@@ -6,7 +6,7 @@
 // -----------------------------------------------------------------------
 
 global using Xunit;
-global using FluentAssertions;
+global using AwesomeAssertions;
 global using NSubstitute;
 global using Compendium.Abstractions.Storage;
 global using Compendium.Abstractions.Storage.Models;

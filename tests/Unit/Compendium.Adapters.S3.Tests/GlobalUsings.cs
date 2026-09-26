@@ -5,6 +5,6 @@
 // </copyright>
 // -----------------------------------------------------------------------
 
-global using FluentAssertions;
+global using AwesomeAssertions;
 global using NSubstitute;
 global using Xunit;
