@@ -6,6 +6,6 @@
 // -----------------------------------------------------------------------
 
 global using Compendium.Core.Results;
-global using FluentAssertions;
+global using AwesomeAssertions;
 global using NSubstitute;
 global using Xunit;
