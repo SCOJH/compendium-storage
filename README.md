@@ -30,9 +30,13 @@ The abstraction is consumed **in-repo** via `ProjectReference` — the atomic-PR
 
 ## Building
 
+Every package targets `net9.0` and `net10.0` (both until .NET 9 leaves support on 2026-11-10). `global.json` asks for
+the .NET 10 SDK, which builds both targets; to run the `net9.0` half of the tests you also need the .NET 9 runtime,
+which the .NET 9 SDK brings. Consuming the packages from a `net9.0` project needs only the .NET 9 SDK.
+
 ```bash
 dotnet build -c Release
-dotnet test -c Release --filter "FullyQualifiedName!~IntegrationTests"   # unit tests
+dotnet test -c Release --filter "FullyQualifiedName!~IntegrationTests"   # unit tests, once per target
 dotnet test -c Release                                                    # + integration (requires Docker)
 ```
 

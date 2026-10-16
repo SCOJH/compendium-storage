@@ -17,16 +17,9 @@
     <PackageVersion Include="MinVer" Version="7.0.0" />
   </ItemGroup>
 
-  <!-- Production runtime (union of the source adapter repos; conflicts resolved highest) -->
+  <!-- Production runtime (union of the source adapter repos; conflicts resolved highest).
+       The Microsoft.Extensions.* family is pinned per target further down. -->
   <ItemGroup>
-    <PackageVersion Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="9.0.16" />
-    <PackageVersion Include="Microsoft.Extensions.Configuration.Abstractions" Version="9.0.16" />
-    <PackageVersion Include="Microsoft.Extensions.Options" Version="9.0.16" />
-    <PackageVersion Include="Microsoft.Extensions.Options.ConfigurationExtensions" Version="9.0.16" />
-    <PackageVersion Include="Microsoft.Extensions.Options.DataAnnotations" Version="9.0.16" />
-    <PackageVersion Include="Microsoft.Extensions.Logging.Abstractions" Version="9.0.16" />
-    <PackageVersion Include="Microsoft.Extensions.Logging.Console" Version="9.0.16" />
-    <PackageVersion Include="Microsoft.Extensions.Http" Version="9.0.16" />
     <PackageVersion Include="AWSSDK.S3" Version="4.0.23.3" />
   </ItemGroup>
 
@@ -43,10 +36,45 @@
     <PackageVersion Include="coverlet.collector" Version="10.0.0" />
     <PackageVersion Include="RichardSzalay.MockHttp" Version="7.0.0" />
     <PackageVersion Include="WireMock.Net" Version="1.6.9" />
-    <PackageVersion Include="Microsoft.Extensions.DependencyInjection" Version="9.0.16" />
+  </ItemGroup>
+
+  <!-- NET10-01: one line per target for the Microsoft.Extensions.* family, which is
+       versioned with the runtime.
+
+       The net9.0 line is the 9.0.x set consumers already run against; it does not
+       move (909edce: a 10.0.x pin here once declared >= 10.0.8 in the packed nuspecs
+       and broke every net9.0 consumer pinning 9.0.16 with NU1605). net10.0 cannot
+       share it: packages built for .NET 10 ask for Microsoft.Extensions.* >= 10.0.0
+       in their net10.0 dependency group, and a central 9.0.x pin would then be a
+       package downgrade (NU1605). Each target therefore gets the line of its own
+       runtime; the packed nuspecs carry one dependency group per target. -->
+  <ItemGroup Condition="'$(TargetFramework)' == 'net9.0'">
     <PackageVersion Include="Microsoft.Extensions.Configuration" Version="9.0.16" />
+    <PackageVersion Include="Microsoft.Extensions.Configuration.Abstractions" Version="9.0.16" />
     <PackageVersion Include="Microsoft.Extensions.Configuration.Binder" Version="9.0.16" />
+    <PackageVersion Include="Microsoft.Extensions.DependencyInjection" Version="9.0.16" />
+    <PackageVersion Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="9.0.16" />
+    <PackageVersion Include="Microsoft.Extensions.Http" Version="9.0.16" />
     <PackageVersion Include="Microsoft.Extensions.Logging" Version="9.0.16" />
+    <PackageVersion Include="Microsoft.Extensions.Logging.Abstractions" Version="9.0.16" />
+    <PackageVersion Include="Microsoft.Extensions.Logging.Console" Version="9.0.16" />
+    <PackageVersion Include="Microsoft.Extensions.Options" Version="9.0.16" />
+    <PackageVersion Include="Microsoft.Extensions.Options.ConfigurationExtensions" Version="9.0.16" />
+    <PackageVersion Include="Microsoft.Extensions.Options.DataAnnotations" Version="9.0.16" />
+  </ItemGroup>
+  <ItemGroup Condition="'$(TargetFramework)' == 'net10.0'">
+    <PackageVersion Include="Microsoft.Extensions.Configuration" Version="10.0.13" />
+    <PackageVersion Include="Microsoft.Extensions.Configuration.Abstractions" Version="10.0.13" />
+    <PackageVersion Include="Microsoft.Extensions.Configuration.Binder" Version="10.0.13" />
+    <PackageVersion Include="Microsoft.Extensions.DependencyInjection" Version="10.0.13" />
+    <PackageVersion Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="10.0.13" />
+    <PackageVersion Include="Microsoft.Extensions.Http" Version="10.0.13" />
+    <PackageVersion Include="Microsoft.Extensions.Logging" Version="10.0.13" />
+    <PackageVersion Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.13" />
+    <PackageVersion Include="Microsoft.Extensions.Logging.Console" Version="10.0.13" />
+    <PackageVersion Include="Microsoft.Extensions.Options" Version="10.0.13" />
+    <PackageVersion Include="Microsoft.Extensions.Options.ConfigurationExtensions" Version="10.0.13" />
+    <PackageVersion Include="Microsoft.Extensions.Options.DataAnnotations" Version="10.0.13" />
   </ItemGroup>
 
   <!-- Container fixtures for integration tests (minio + postgres + supabase/storage-api). -->
