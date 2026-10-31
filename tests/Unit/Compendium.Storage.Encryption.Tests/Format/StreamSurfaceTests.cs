@@ -13,6 +13,8 @@ namespace Compendium.Storage.Encryption.Tests.Format;
 
 public sealed class StreamSurfaceTests
 {
+    private const string Tenant = "tenant-a";
+
     public static TheoryData<string> Streams => new() { "encrypting", "decrypting" };
 
     [Theory]
@@ -101,7 +103,7 @@ public sealed class StreamSurfaceTests
         // Arrange — two blocks; the second is damaged.
         var (header, key, sealedBody) = Seal(PatternStream.Bytes(EncryptionHarness.Block + 10));
         sealedBody[^1] ^= 1;
-        using var stream = new DecryptingReadStream(new MemoryStream(sealedBody), new AesGcm(key, 16), header);
+        using var stream = new DecryptingReadStream(new MemoryStream(sealedBody), new AesGcm(key, 16), header, header.AssociatedData(Tenant));
         var buffer = new byte[EncryptionHarness.Block];
 
         // Act
@@ -119,7 +121,7 @@ public sealed class StreamSurfaceTests
         // Arrange
         var plaintext = PatternStream.Bytes(1000);
         var (header, key, sealedBody) = Seal(plaintext);
-        await using var stream = new DecryptingReadStream(new MemoryStream(sealedBody), new AesGcm(key, 16), header);
+        await using var stream = new DecryptingReadStream(new MemoryStream(sealedBody), new AesGcm(key, 16), header, header.AssociatedData(Tenant));
         var buffer = new byte[2000];
 
         // Act
@@ -127,6 +129,51 @@ public sealed class StreamSurfaceTests
 
         // Assert
         buffer[..read].Should().Equal(plaintext);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task DecryptingStream_ReadAfterIntegrityFailure_KeepsFailingAndReturnsNothing(bool synchronous)
+    {
+        // Arrange — three blocks; the second is damaged.
+        var (header, key, sealedBody) = Seal(PatternStream.Bytes((2 * EncryptionHarness.Block) + 10));
+        sealedBody[EncryptionHarness.SealedBlock + 5] ^= 1;
+        await using var stream = new DecryptingReadStream(
+            new MemoryStream(sealedBody),
+            new AesGcm(key, 16),
+            header,
+            header.AssociatedData(Tenant));
+        var buffer = new byte[EncryptionHarness.Block];
+        (await ReadAsync(stream, buffer, synchronous)).Should().Be(EncryptionHarness.Block);
+        var failing = () => ReadAsync(stream, buffer, synchronous);
+        await failing.Should().ThrowAsync<CryptographicException>();
+        Array.Fill(buffer, (byte)0xEE);
+
+        // Act
+        var again = () => ReadAsync(stream, buffer, synchronous);
+
+        // Assert
+        await again.Should().ThrowAsync<CryptographicException>();
+        await again.Should().ThrowAsync<CryptographicException>();
+        buffer.Should().OnlyContain(b => b == 0xEE, "nothing is handed out after a failed block");
+        stream.CanRead.Should().BeFalse();
+    }
+
+    [Fact]
+    public void AssociatedData_IsHeaderThenTenantLengthThenTenant()
+    {
+        // Arrange
+        var header = EncryptedObjectHeader.Create("kek-test");
+
+        // Act
+        var data = header.AssociatedData("tenant-é");
+
+        // Assert
+        data[..header.Bytes.Length].Should().Equal(header.Bytes);
+        data[header.Bytes.Length..(header.Bytes.Length + 4)].Should().Equal(0, 0, 0, 9);
+        System.Text.Encoding.UTF8.GetString(data, header.Bytes.Length + 4, 9).Should().Be("tenant-é");
+        data.Length.Should().Be(header.Bytes.Length + 4 + 9);
     }
 
     [Theory]
@@ -141,19 +188,26 @@ public sealed class StreamSurfaceTests
         length.Should().Be(0);
     }
 
+    private static async Task<int> ReadAsync(Stream stream, byte[] buffer, bool synchronous) =>
+        synchronous ? stream.Read(buffer, 0, buffer.Length) : await stream.ReadAsync(buffer);
+
     private static Stream Create(string kind)
     {
         var (header, key, sealedBody) = Seal([1, 2, 3]);
         return kind == "encrypting"
-            ? new EncryptingReadStream(new MemoryStream([1, 2, 3]), new AesGcm(key, 16), header)
-            : new DecryptingReadStream(new MemoryStream(sealedBody), new AesGcm(key, 16), header);
+            ? new EncryptingReadStream(new MemoryStream([1, 2, 3]), new AesGcm(key, 16), header, header.AssociatedData(Tenant))
+            : new DecryptingReadStream(new MemoryStream(sealedBody), new AesGcm(key, 16), header, header.AssociatedData(Tenant));
     }
 
     private static (EncryptedObjectHeader Header, byte[] Key, byte[] SealedBody) Seal(byte[] plaintext)
     {
         var key = RandomNumberGenerator.GetBytes(32);
         var header = EncryptedObjectHeader.Create("kek-test");
-        using var encrypting = new EncryptingReadStream(new MemoryStream(plaintext), new AesGcm(key, 16), header);
+        using var encrypting = new EncryptingReadStream(
+            new MemoryStream(plaintext),
+            new AesGcm(key, 16),
+            header,
+            header.AssociatedData(Tenant));
         var sink = new MemoryStream();
         encrypting.CopyTo(sink);
         return (header, key, sink.ToArray()[header.Bytes.Length..]);

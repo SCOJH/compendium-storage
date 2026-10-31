@@ -90,6 +90,40 @@ public sealed class KeyHandlingTests
     }
 
     [Theory]
+    [InlineData(EncryptionHarness.TenantA, true)]
+    [InlineData("tenant-b", false)]
+    public async Task OpenRead_ProviderIgnoringTenant_ObjectReplayedUnderAnotherTenantIsRefused(string reader, bool readable)
+    {
+        // Arrange — a faulty provider that unwraps for any tenant: the tenant bound in every block still refuses.
+        var dataKey = new byte[32];
+        var keys = Substitute.For<IKeyEncryptionKeyProvider>();
+        keys.WrapAsync(default!, default).ReturnsForAnyArgs(call =>
+        {
+            ((ReadOnlyMemory<byte>)call[1]).Span.CopyTo(dataKey);
+            return Result.Success(new WrappedDataKey("kek-1", new byte[40]));
+        });
+        keys.UnwrapAsync(default!, default!, default).ReturnsForAnyArgs(_ => Result.Success(dataKey.ToArray()));
+        var harness = new EncryptionHarness(keys: keys);
+        var plaintext = PatternStream.Bytes(70_000);
+        var stored = await harness.PutAsync("doc.bin", plaintext);
+        harness.SetTenant(reader);
+
+        // Act
+        var outcome = await harness.ReadAsync(stored);
+
+        // Assert
+        if (readable)
+        {
+            outcome.Succeeded.Should().BeTrue();
+            outcome.Content.Should().Equal(plaintext);
+        }
+        else
+        {
+            outcome.Open.Error.Code.Should().Be(StorageEncryptionErrors.Prefix + ".IntegrityCheckFailed");
+        }
+    }
+
+    [Theory]
     [InlineData(0)]
     [InlineData(16)]
     [InlineData(31)]

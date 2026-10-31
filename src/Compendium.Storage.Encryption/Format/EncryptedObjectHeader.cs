@@ -5,6 +5,7 @@
 // </copyright>
 // -----------------------------------------------------------------------
 
+using System.Buffers.Binary;
 using System.Security.Cryptography;
 using System.Text;
 
@@ -17,8 +18,8 @@ namespace Compendium.Storage.Encryption.Format;
 /// <remarks>
 /// The header carries no key material: the wrapped data key is kept by the caller. The KEK identifier is the
 /// one in use when the object was written; it is not read back, since after a rotation the caller's copy names
-/// a newer KEK, which is expected. The header is authenticated by every block, so any change to it, the KEK
-/// identifier included, fails decryption.
+/// a newer KEK, which is expected. The header, followed by the owning tenant's identifier, is authenticated by
+/// every block (<see cref="AssociatedData"/>), so any change to it, the KEK identifier included, fails decryption.
 /// </remarks>
 internal sealed class EncryptedObjectHeader
 {
@@ -31,6 +32,23 @@ internal sealed class EncryptedObjectHeader
 
     /// <summary>Gets the serialized header, used as associated data by every block.</summary>
     public byte[] Bytes { get; }
+
+    /// <summary>
+    /// Builds the associated data authenticated by every block: <c>header | tenantId length (4 bytes, big
+    /// endian) | tenantId (UTF-8)</c>. Binding the tenant means an object and its data key moved to another
+    /// tenant fail verification, even under a key provider that would unwrap the key there.
+    /// </summary>
+    /// <param name="tenantId">The tenant that owns the object.</param>
+    /// <returns>The associated data.</returns>
+    public byte[] AssociatedData(string tenantId)
+    {
+        var tenantLength = Encoding.UTF8.GetByteCount(tenantId);
+        var data = new byte[Bytes.Length + sizeof(int) + tenantLength];
+        Bytes.CopyTo(data, 0);
+        BinaryPrimitives.WriteInt32BigEndian(data.AsSpan(Bytes.Length), tenantLength);
+        Encoding.UTF8.GetBytes(tenantId, data.AsSpan(Bytes.Length + sizeof(int)));
+        return data;
+    }
 
     /// <summary>Gets the per-object nonce prefix.</summary>
     public ReadOnlySpan<byte> NoncePrefix => Bytes.AsSpan(Bytes.Length - EnvelopeFormat.NoncePrefixSize);

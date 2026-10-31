@@ -24,7 +24,7 @@ namespace Compendium.Storage.Encryption.Format;
 /// The 12-byte nonce of block <c>i</c> is <c>prefix (7 bytes) || i (4 bytes, big endian) || last (1 byte)</c>,
 /// the STREAM construction: a block moved to another position, or a non-last block presented as the last one,
 /// fails authentication, so reordering, removal and truncation are all detected. Every block authenticates
-/// the whole header as associated data.
+/// the whole header followed by the owning tenant's identifier as associated data.
 /// </para>
 /// </remarks>
 internal static class EnvelopeFormat

@@ -105,7 +105,8 @@ public sealed class EncryptingObjectStore : IEncryptedObjectStore
             CryptographicOperations.ZeroMemory(dataKey);
         }
 
-        await using var encrypting = new EncryptingReadStream(content, aes, EncryptedObjectHeader.Create(wrapped.KekId));
+        var header = EncryptedObjectHeader.Create(wrapped.KekId);
+        await using var encrypting = new EncryptingReadStream(content, aes, header, header.AssociatedData(tenantId));
 
         var put = await _inner.PutAsync(key, encrypting, metadata, cancellationToken).ConfigureAwait(false);
         if (put.IsFailure)
@@ -169,7 +170,7 @@ public sealed class EncryptingObjectStore : IEncryptedObjectStore
         }
 
         var (header, aes) = opened.Value;
-        var decrypting = new DecryptingReadStream(stored.Content, aes, header);
+        var decrypting = new DecryptingReadStream(stored.Content, aes, header, header.AssociatedData(tenantId));
         try
         {
             await decrypting.PrefetchAsync(cancellationToken).ConfigureAwait(false);

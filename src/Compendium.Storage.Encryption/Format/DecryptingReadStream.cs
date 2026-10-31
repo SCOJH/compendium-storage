@@ -15,15 +15,17 @@ namespace Compendium.Storage.Encryption.Format;
 /// time. Memory use is two pooled block buffers, whatever the object length.
 /// </summary>
 /// <remarks>
-/// A block's plaintext is returned only after its tag verified. The sealed buffer holds one byte more than a
-/// sealed block: the look-ahead byte tells whether the block just read is the last one, which is part of its
-/// nonce, so an object cut at a block boundary or extended past its last block fails verification.
+/// A block's plaintext is returned only after its tag verified, and after a failed block every later read fails
+/// too. The sealed buffer holds one byte more than a sealed block: the look-ahead byte tells whether the block
+/// just read is the last one, which is part of its nonce, so an object cut at a block boundary or extended past
+/// its last block fails verification.
 /// </remarks>
 internal sealed class DecryptingReadStream : Stream
 {
     private readonly Stream _source;
     private readonly AesGcm _aes;
     private readonly EncryptedObjectHeader _header;
+    private readonly byte[] _associatedData;
     private byte[]? _sealed;
     private byte[]? _plaintext;
     private int _sealedCount;
@@ -32,24 +34,27 @@ internal sealed class DecryptingReadStream : Stream
     private uint _counter;
     private bool _sourceExhausted;
     private bool _lastOpened;
+    private bool _faulted;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="DecryptingReadStream"/> class.
     /// </summary>
     /// <param name="source">The ciphertext, positioned right after the header. Ownership is transferred.</param>
     /// <param name="aes">The data-key cipher. Ownership is transferred to this instance.</param>
-    /// <param name="header">The object header, authenticated by every block.</param>
-    public DecryptingReadStream(Stream source, AesGcm aes, EncryptedObjectHeader header)
+    /// <param name="header">The object header.</param>
+    /// <param name="associatedData">The data authenticated by every block (<see cref="EncryptedObjectHeader.AssociatedData"/>).</param>
+    public DecryptingReadStream(Stream source, AesGcm aes, EncryptedObjectHeader header, byte[] associatedData)
     {
         _source = source;
         _aes = aes;
         _header = header;
+        _associatedData = associatedData;
         _sealed = ArrayPool<byte>.Shared.Rent(EnvelopeFormat.SealedBlockSize + 1);
         _plaintext = ArrayPool<byte>.Shared.Rent(EnvelopeFormat.BlockSize);
     }
 
     /// <inheritdoc />
-    public override bool CanRead => _sealed is not null;
+    public override bool CanRead => _sealed is not null && !_faulted;
 
     /// <inheritdoc />
     public override bool CanSeek => false;
@@ -87,6 +92,7 @@ internal sealed class DecryptingReadStream : Stream
     public override int Read(Span<byte> buffer)
     {
         ObjectDisposedException.ThrowIf(_sealed is null, this);
+        ThrowIfFaulted();
 
         if (buffer.IsEmpty)
         {
@@ -120,6 +126,7 @@ internal sealed class DecryptingReadStream : Stream
     public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
     {
         ObjectDisposedException.ThrowIf(_sealed is null, this);
+        ThrowIfFaulted();
 
         if (buffer.IsEmpty)
         {
@@ -207,7 +214,7 @@ internal sealed class DecryptingReadStream : Stream
         var length = isLast ? _sealedCount : EnvelopeFormat.SealedBlockSize;
         if (length < EnvelopeFormat.TagSize)
         {
-            throw EnvelopeFormat.IntegrityFailure();
+            throw Fault();
         }
 
         var plaintextLength = length - EnvelopeFormat.TagSize;
@@ -221,11 +228,11 @@ internal sealed class DecryptingReadStream : Stream
                 _sealed.AsSpan(0, plaintextLength),
                 _sealed.AsSpan(plaintextLength, EnvelopeFormat.TagSize),
                 _plaintext.AsSpan(0, plaintextLength),
-                _header.Bytes);
+                _associatedData);
         }
         catch (CryptographicException)
         {
-            throw EnvelopeFormat.IntegrityFailure();
+            throw Fault();
         }
 
         _plaintextOffset = 0;
@@ -241,7 +248,7 @@ internal sealed class DecryptingReadStream : Stream
             // A writer never produces more blocks than the counter can number: wrapping would reuse nonces.
             if (_counter == uint.MaxValue)
             {
-                throw EnvelopeFormat.IntegrityFailure();
+                throw Fault();
             }
 
             // Carry the look-ahead byte over to the next block.
@@ -249,6 +256,21 @@ internal sealed class DecryptingReadStream : Stream
             _sealedCount = 1;
             _counter++;
         }
+    }
+
+    // Once a block failed, the stream stays failed: no later read may hand out anything.
+    private void ThrowIfFaulted()
+    {
+        if (_faulted)
+        {
+            throw EnvelopeFormat.IntegrityFailure();
+        }
+    }
+
+    private CryptographicException Fault()
+    {
+        _faulted = true;
+        return EnvelopeFormat.IntegrityFailure();
     }
 
     private int Drain(Span<byte> destination)

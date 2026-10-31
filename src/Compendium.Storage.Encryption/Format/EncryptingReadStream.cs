@@ -24,6 +24,7 @@ internal sealed class EncryptingReadStream : Stream
     private readonly Stream _source;
     private readonly AesGcm _aes;
     private readonly EncryptedObjectHeader _header;
+    private readonly byte[] _associatedData;
     private byte[]? _plaintext;
     private byte[]? _sealed;
     private int _plaintextCount;
@@ -38,12 +39,14 @@ internal sealed class EncryptingReadStream : Stream
     /// </summary>
     /// <param name="source">The plaintext source.</param>
     /// <param name="aes">The data-key cipher. Ownership is transferred to this instance.</param>
-    /// <param name="header">The object header, emitted first and authenticated by every block.</param>
-    public EncryptingReadStream(Stream source, AesGcm aes, EncryptedObjectHeader header)
+    /// <param name="header">The object header, emitted first.</param>
+    /// <param name="associatedData">The data authenticated by every block (<see cref="EncryptedObjectHeader.AssociatedData"/>).</param>
+    public EncryptingReadStream(Stream source, AesGcm aes, EncryptedObjectHeader header, byte[] associatedData)
     {
         _source = source;
         _aes = aes;
         _header = header;
+        _associatedData = associatedData;
         _plaintext = ArrayPool<byte>.Shared.Rent(EnvelopeFormat.BlockSize + 1);
         _sealed = ArrayPool<byte>.Shared.Rent(Math.Max(EnvelopeFormat.SealedBlockSize, header.Bytes.Length));
 
@@ -201,7 +204,7 @@ internal sealed class EncryptingReadStream : Stream
             _plaintext.AsSpan(0, length),
             _sealed.AsSpan(0, length),
             _sealed.AsSpan(length, EnvelopeFormat.TagSize),
-            _header.Bytes);
+            _associatedData);
 
         PlaintextLength += length;
         _sealedOffset = 0;

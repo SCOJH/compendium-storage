@@ -18,8 +18,10 @@ namespace Compendium.Abstractions.Storage.Encryption;
 /// storage layer never sees them.
 /// </para>
 /// <para>
-/// Implementations must never log key material, and must fail (rather than return arbitrary bytes)
-/// when a wrapped key was not produced by the identified KEK for that tenant.
+/// Implementations must bind <c>tenantId</c> and <c>kekId</c> to the wrapped key (as AES-GCM associated
+/// data, a KMS encryption context, ...), so that a wrapped key presented for another tenant or another KEK
+/// fails to unwrap; they must fail (rather than return arbitrary bytes) when a wrapped key was not produced by
+/// the identified KEK for that tenant, and must never log key material.
 /// </para>
 /// </remarks>
 public interface IKeyEncryptionKeyProvider

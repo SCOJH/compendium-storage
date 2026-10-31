@@ -13,7 +13,8 @@ described in the generated notes of the [GitHub Releases](https://github.com/SCO
 - **`Compendium.Storage.Encryption`: envelope encryption over any `IObjectStore`.** `EncryptingObjectStore`
   encrypts each object with its own random AES-256 data key, streamed as AES-256-GCM blocks of 64 KiB behind a
   versioned header (format version, KEK identifier, nonce prefix); the nonce is prefix + block counter + last-block
-  flag, so a modified, removed, reordered or truncated block, or appended data, is refused. Reads and writes stream
+  flag and every block authenticates the header and the owning tenant's identifier, so a modified, removed,
+  reordered or truncated block, appended data, or an object replayed under another tenant is refused. Reads and writes stream
   with constant memory, and no byte of a block is returned before it verified. The data key is wrapped per tenant by
   the new `IKeyEncryptionKeyProvider` port and handed back to the caller (`PutAsync` returns `StorageKey`,
   `WrappedDek`, `KekId`; `OpenReadAsync` takes them), never stored in the object, so a KEK rotation re-wraps data

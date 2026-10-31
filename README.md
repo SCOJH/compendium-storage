@@ -49,7 +49,10 @@ await using var file = open.Value;                             // plaintext stre
 ```
 
 The wrapped DEK is returned to the caller and never stored in the object, so rotating a KEK re-wraps DEKs without
-rewriting objects. Metadata passed to `PutAsync` is stored in clear by the underlying store.
+rewriting objects. The object is bound to its tenant but not to its storage key: the caller's record (storage key,
+wrapped DEK, KEK identifier) is what ties an object to its key. Metadata passed to `PutAsync` is stored in clear by
+the underlying store. `IKeyEncryptionKeyProvider` implementations must bind the tenant and KEK identifier to the
+wrapped DEK (AES-GCM associated data, KMS encryption context).
 
 Format, version 1:
 
@@ -57,11 +60,13 @@ Format, version 1:
   random nonce prefix. No key material.
 - Blocks: 64 KiB of plaintext each (the last one 0 to 64 KiB, always present), AES-256-GCM, each followed by its
   16-byte tag. Nonce = prefix (7 bytes) + block index (4 bytes, big endian) + last-block flag (1 byte); every block
-  authenticates the whole header as associated data.
+  authenticates, as associated data, the whole header followed by the tenant identifier (4-byte big-endian length,
+  then UTF-8), so an object and its DEK replayed under another tenant fail verification.
 
 Reads verify each block before returning any of its bytes. A wrong key, a foreign object or an altered header fail
 `OpenReadAsync`; a modified, removed, reordered, duplicated or truncated later block, or appended data, makes the
-read throw `CryptographicException`, which a consumer must treat as the whole object being invalid. Only the BCL
+read throw `CryptographicException` (and every later read too), which a consumer must treat as the whole object
+being invalid. Only the BCL
 `AesGcm` is used; key buffers are wiped after use and nothing key-related is logged.
 
 ## Building
@@ -80,7 +85,7 @@ CI enforces a 90% line-coverage gate on the unit-testable surface (currently ~96
 
 ## Releasing
 
-Push a tag `v*` (e.g. `v1.1.0-preview.2`). The Release workflow builds, runs unit tests, packs all five packages, publishes to GitHub Packages, then to nuget.org when `NUGET_API_KEY` is available (soft-skips with a warning otherwise), and creates a GitHub Release.
+Push a tag `v*` (e.g. `v1.1.0-preview.2`). The Release workflow builds, runs unit tests, packs all five packages, publishes to GitHub Packages, then to nuget.org (through Trusted Publishing, or `NUGET_API_KEY` as a fallback; the release fails otherwise), and creates a GitHub Release.
 
 ## Provenance
 
