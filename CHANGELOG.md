@@ -34,4 +34,15 @@ described in the generated notes of the [GitHub Releases](https://github.com/SCO
   `Compendium.Core`, `Compendium.Multitenancy`) stay at 1.0.5-preview.1: their `net9.0` assets are what the
   `net10.0` target consumes. (NET10-01, agent-spot/backlog#363)
 
+### Fixed
+
+- **`Compendium.Adapters.S3`: non-seekable streams can be uploaded.** A stream of unknown length (such as the
+  output of `EncryptingObjectStore`) went to a single `PutObject`, which the AWS SDK refuses ("Could not determine
+  content length"), whatever its size. Such a stream is now read one 5 MiB part ahead: one that ends within it is
+  sent as a single `PUT` of known length, a longer one as a multipart upload in 5 MiB parts, so retained memory is
+  bounded by one part, up to 10 000 parts (~48.8 GiB). An upload that would need more parts is now refused before
+  the 10 001st part with `S3.Put.TooLarge`, instead of failing at S3 after the whole object was sent; a failing
+  abort no longer masks the original error. Seekable streams are otherwise unchanged. (FIL-04b,
+  agent-spot/backlog#648)
+
 [Unreleased]: https://github.com/SCOJH/compendium-storage/compare/v1.1.0-preview.3...HEAD

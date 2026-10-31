@@ -29,12 +29,16 @@ namespace Compendium.Adapters.S3.Storage;
 /// </para>
 /// <para>
 /// Multipart upload is automatic above <see cref="S3Options.MultipartThresholdBytes"/>.
+/// Non-seekable streams, whose length is unknown up front, are read one 5 MiB part ahead: one that ends
+/// within it is sent as a single <c>PUT</c> of known length, a longer one multipart, so memory stays bounded
+/// by one part, up to 10 000 parts (~48.8 GiB); a longer stream is refused with <c>S3.Put.TooLarge</c>.
 /// SSE-S3 (AES-256) and SSE-KMS encryption are propagated to every <c>PUT</c>.
 /// </para>
 /// </remarks>
 public sealed class S3ObjectStore : IObjectStore
 {
     private const int MultipartChunkBytes = 5 * 1024 * 1024; // 5 MiB — S3 minimum.
+    private const int MaxMultipartParts = 10_000; // S3 maximum.
 
     private readonly IAmazonS3 _s3;
     private readonly S3Options _options;
@@ -65,6 +69,11 @@ public sealed class S3ObjectStore : IObjectStore
         _logger = logger;
     }
 
+    /// <summary>
+    /// Gets or sets the maximum number of parts of a multipart upload. S3 allows 10 000; lowered by tests only.
+    /// </summary>
+    internal int MaxPartCount { get; set; } = MaxMultipartParts;
+
     /// <inheritdoc />
     public async Task<Result<ObjectInfo>> PutAsync(
         string key,
@@ -93,15 +102,27 @@ public sealed class S3ObjectStore : IObjectStore
 
         try
         {
+            Result uploaded;
             if (ShouldUseMultipart(content))
             {
-                await PutMultipartAsync(storageKey, content, metadata, cancellationToken)
+                uploaded = await PutMultipartAsync(storageKey, content, metadata, cancellationToken)
                     .ConfigureAwait(false);
             }
-            else
+            else if (content.CanSeek)
             {
                 await PutSinglePartAsync(storageKey, content, metadata, cancellationToken)
                     .ConfigureAwait(false);
+                uploaded = Result.Success();
+            }
+            else
+            {
+                uploaded = await PutNonSeekableAsync(storageKey, content, metadata, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+
+            if (uploaded.IsFailure)
+            {
+                return uploaded.Error;
             }
 
             return await DescribeAsync(tenantId, storageKey, key, cancellationToken)
@@ -360,8 +381,7 @@ public sealed class S3ObjectStore : IObjectStore
     {
         if (!content.CanSeek)
         {
-            // Non-seekable streams must use single-shot upload : we cannot know
-            // the length up front.
+            // The length is unknown up front: PutNonSeekableAsync decides after reading one part.
             return false;
         }
 
@@ -388,11 +408,35 @@ public sealed class S3ObjectStore : IObjectStore
         await _s3.PutObjectAsync(request, cancellationToken).ConfigureAwait(false);
     }
 
-    private async Task PutMultipartAsync(
+    private async Task<Result> PutNonSeekableAsync(
         string storageKey,
         Stream content,
         ObjectMetadata? metadata,
         CancellationToken cancellationToken)
+    {
+        // The SDK cannot send a stream of unknown length in one PUT ("Could not determine content length").
+        // Read one part ahead: a stream that ends within it goes as a single PUT of known length, a longer one
+        // multipart, starting with that part.
+        var buffer = new byte[MultipartChunkBytes];
+        var read = await FillBufferAsync(content, buffer, cancellationToken).ConfigureAwait(false);
+        if (read < buffer.Length)
+        {
+            using var single = new MemoryStream(buffer, 0, read, writable: false);
+            await PutSinglePartAsync(storageKey, single, metadata, cancellationToken).ConfigureAwait(false);
+            return Result.Success();
+        }
+
+        return await PutMultipartAsync(storageKey, content, metadata, cancellationToken, buffer, read)
+            .ConfigureAwait(false);
+    }
+
+    private async Task<Result> PutMultipartAsync(
+        string storageKey,
+        Stream content,
+        ObjectMetadata? metadata,
+        CancellationToken cancellationToken,
+        byte[]? firstPart = null,
+        int firstPartLength = 0)
     {
         var initiateRequest = new InitiateMultipartUploadRequest
         {
@@ -411,16 +455,29 @@ public sealed class S3ObjectStore : IObjectStore
 
         try
         {
-            var buffer = new byte[MultipartChunkBytes];
+            var buffer = firstPart ?? new byte[MultipartChunkBytes];
+            var pending = firstPartLength;
             var partNumber = 1;
 
             while (true)
             {
-                var read = await FillBufferAsync(content, buffer, cancellationToken)
-                    .ConfigureAwait(false);
+                var read = pending > 0
+                    ? pending
+                    : await FillBufferAsync(content, buffer, cancellationToken).ConfigureAwait(false);
+                pending = 0;
                 if (read == 0)
                 {
                     break;
+                }
+
+                if (partNumber > MaxPartCount)
+                {
+                    // Refuse before sending a part S3 would reject, rather than after the whole object.
+                    _logger.LogWarning("S3 multipart upload of {Key} exceeds {MaxParts} parts ; aborting", storageKey, MaxPartCount);
+                    await AbortMultipartAsync(storageKey, uploadId).ConfigureAwait(false);
+                    return Error.Validation(
+                        "S3.Put.TooLarge",
+                        $"The object exceeds the S3 limit of {MaxPartCount} parts of {MultipartChunkBytes} bytes.");
                 }
 
                 using var partStream = new MemoryStream(buffer, 0, read, writable: false);
@@ -451,27 +508,32 @@ public sealed class S3ObjectStore : IObjectStore
 
             await _s3.CompleteMultipartUploadAsync(completeRequest, cancellationToken)
                 .ConfigureAwait(false);
+            return Result.Success();
         }
         catch
         {
-            // Best-effort abort — never mask the original failure.
-            try
-            {
-                await _s3.AbortMultipartUploadAsync(
-                    new AbortMultipartUploadRequest
-                    {
-                        BucketName = _options.Bucket,
-                        Key = storageKey,
-                        UploadId = uploadId,
-                    },
-                    CancellationToken.None).ConfigureAwait(false);
-            }
-            catch (AmazonS3Exception abortEx)
-            {
-                _logger.LogWarning(abortEx, "S3 multipart abort failed for {Key}", storageKey);
-            }
-
+            await AbortMultipartAsync(storageKey, uploadId).ConfigureAwait(false);
             throw;
+        }
+    }
+
+    private async Task AbortMultipartAsync(string storageKey, string uploadId)
+    {
+        // Best-effort abort — never mask the original failure, whatever the abort throws (network, timeout).
+        try
+        {
+            await _s3.AbortMultipartUploadAsync(
+                new AbortMultipartUploadRequest
+                {
+                    BucketName = _options.Bucket,
+                    Key = storageKey,
+                    UploadId = uploadId,
+                },
+                CancellationToken.None).ConfigureAwait(false);
+        }
+        catch (Exception abortEx)
+        {
+            _logger.LogWarning(abortEx, "S3 multipart abort failed for {Key}", storageKey);
         }
     }
 

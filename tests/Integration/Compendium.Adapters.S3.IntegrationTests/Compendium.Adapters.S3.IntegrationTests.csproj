@@ -11,6 +11,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\..\src\Compendium.Adapters.S3\Compendium.Adapters.S3.csproj" />
+    <ProjectReference Include="..\..\..\src\Compendium.Storage.Encryption\Compendium.Storage.Encryption.csproj" />
   </ItemGroup>
 
   <ItemGroup>
