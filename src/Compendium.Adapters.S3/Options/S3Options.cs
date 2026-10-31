@@ -73,7 +73,8 @@ public sealed class S3Options
     public string Bucket { get; set; } = string.Empty;
 
     /// <summary>
-    /// Multipart-upload threshold, in bytes. Default 8 MiB.
+    /// Multipart-upload threshold, in bytes, for seekable streams (whose length is known). Default 8 MiB.
+    /// A non-seekable stream ignores it: it goes multipart as soon as it exceeds one 5 MiB part.
     /// </summary>
     [Range(1, long.MaxValue)]
     public long MultipartThresholdBytes { get; set; } = DefaultMultipartThresholdBytes;

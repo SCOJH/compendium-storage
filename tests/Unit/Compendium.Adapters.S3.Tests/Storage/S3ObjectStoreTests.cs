@@ -535,6 +535,133 @@ public class S3ObjectStoreTests
             Arg.Any<CancellationToken>());
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task PutAsync_MorePartsThanAllowed_RefusesBeforeTheExtraPartAndAborts(bool seekable)
+    {
+        // Arrange — two parts allowed, three needed.
+        _options.MultipartThresholdBytes = 1024;
+        var payload = Payload(12 * 1024 * 1024);
+        var sut = CreateSut();
+        sut.MaxPartCount = 2;
+        StubMultipart();
+
+        // Act
+        var actual = await sut.PutAsync(
+            "big.bin",
+            seekable ? new MemoryStream(payload) : new ChunkedNonSeekableStream(payload, 65536));
+
+        // Assert
+        actual.Error.Code.Should().Be("S3.Put.TooLarge");
+        await _s3.Received(2).UploadPartAsync(Arg.Any<UploadPartRequest>(), Arg.Any<CancellationToken>());
+        await _s3.Received(1).AbortMultipartUploadAsync(
+            Arg.Is<AbortMultipartUploadRequest>(r => r.UploadId == "upload-1"),
+            CancellationToken.None);
+        await _s3.DidNotReceive().CompleteMultipartUploadAsync(
+            Arg.Any<CompleteMultipartUploadRequest>(),
+            Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task PutAsync_ExactlyTheAllowedParts_Completes()
+    {
+        // Arrange
+        var sut = CreateSut();
+        sut.MaxPartCount = 2;
+        StubMultipart();
+        StubHead($"{TenantId}/big.bin", new GetObjectMetadataResponse { ContentLength = 10 * 1024 * 1024, ETag = "\"e-2\"" });
+
+        // Act
+        var actual = await sut.PutAsync("big.bin", new ChunkedNonSeekableStream(Payload(10 * 1024 * 1024), 65536));
+
+        // Assert
+        actual.IsSuccess.Should().BeTrue();
+        await _s3.Received(2).UploadPartAsync(Arg.Any<UploadPartRequest>(), Arg.Any<CancellationToken>());
+        await _s3.DidNotReceive().AbortMultipartUploadAsync(
+            Arg.Any<AbortMultipartUploadRequest>(),
+            Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task PutAsync_NonSeekableCancelledDuringMultipart_AbortsAndThrows()
+    {
+        // Arrange — the token is cancelled while part 2 is sent; the SDK then throws.
+        using var cts = new CancellationTokenSource();
+        var sut = CreateSut();
+        StubMultipart();
+        var parts = 0;
+        _s3.UploadPartAsync(Arg.Any<UploadPartRequest>(), Arg.Any<CancellationToken>())
+            .Returns(call =>
+            {
+                if (++parts == 2)
+                {
+                    cts.Cancel();
+                    call.Arg<CancellationToken>().ThrowIfCancellationRequested();
+                }
+
+                return new UploadPartResponse { ETag = $"etag-{parts}" };
+            });
+
+        // Act
+        var act = () => sut.PutAsync(
+            "big.bin",
+            new ChunkedNonSeekableStream(Payload(12 * 1024 * 1024), 65536),
+            cancellationToken: cts.Token);
+
+        // Assert
+        await act.Should().ThrowAsync<OperationCanceledException>();
+        parts.Should().Be(2);
+        await _s3.Received(1).AbortMultipartUploadAsync(
+            Arg.Is<AbortMultipartUploadRequest>(r => r.UploadId == "upload-1"),
+            CancellationToken.None);
+        await _s3.DidNotReceive().CompleteMultipartUploadAsync(
+            Arg.Any<CompleteMultipartUploadRequest>(),
+            Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task PutAsync_NonSeekableSourceFailsMidway_AbortsAndRethrows()
+    {
+        // Arrange — the source fails while the second part is being read.
+        var sut = CreateSut();
+        StubMultipart();
+
+        // Act
+        var act = () => sut.PutAsync(
+            "big.bin",
+            new ChunkedNonSeekableStream(Payload(12 * 1024 * 1024), 65536, failAt: 6 * 1024 * 1024));
+
+        // Assert
+        await act.Should().ThrowAsync<IOException>().WithMessage("source failed");
+        await _s3.Received(1).UploadPartAsync(Arg.Any<UploadPartRequest>(), Arg.Any<CancellationToken>());
+        await _s3.Received(1).AbortMultipartUploadAsync(
+            Arg.Is<AbortMultipartUploadRequest>(r => r.UploadId == "upload-1"),
+            CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task PutAsync_AbortFailsWithNonS3Exception_StillReturnsOriginalError()
+    {
+        // Arrange — a part fails, then the abort itself times out.
+        var sut = CreateSut();
+        StubMultipart();
+        _s3.UploadPartAsync(Arg.Any<UploadPartRequest>(), Arg.Any<CancellationToken>())
+            .Returns<UploadPartResponse>(_ => throw new AmazonS3Exception("part failed") { StatusCode = HttpStatusCode.Forbidden });
+        _s3.AbortMultipartUploadAsync(Arg.Any<AbortMultipartUploadRequest>(), Arg.Any<CancellationToken>())
+            .Returns<AbortMultipartUploadResponse>(_ => throw new TaskCanceledException("abort timed out"));
+
+        // Act
+        var actual = await sut.PutAsync("big.bin", new ChunkedNonSeekableStream(Payload(6 * 1024 * 1024), 65536));
+
+        // Assert
+        actual.IsFailure.Should().BeTrue();
+        actual.Error.Code.Should().Be("Storage.AccessDenied");
+        await _s3.Received(1).AbortMultipartUploadAsync(
+            Arg.Any<AbortMultipartUploadRequest>(),
+            Arg.Any<CancellationToken>());
+    }
+
     [Fact]
     public async Task PutAsync_SmallSeekableStream_SendsTheCallersStreamUnchanged()
     {
@@ -1395,9 +1522,16 @@ public class S3ObjectStoreTests
         await act.Should().ThrowAsync<OperationCanceledException>();
     }
 
-    /// <summary>
-    /// Helper non-seekable stream for multipart routing tests.
-    /// </summary>
+    private void StubMultipart()
+    {
+        _s3.InitiateMultipartUploadAsync(Arg.Any<InitiateMultipartUploadRequest>(), Arg.Any<CancellationToken>())
+            .Returns(new InitiateMultipartUploadResponse { UploadId = "upload-1" });
+        _s3.UploadPartAsync(Arg.Any<UploadPartRequest>(), Arg.Any<CancellationToken>())
+            .Returns(new UploadPartResponse { ETag = "etag" });
+        _s3.CompleteMultipartUploadAsync(Arg.Any<CompleteMultipartUploadRequest>(), Arg.Any<CancellationToken>())
+            .Returns(new CompleteMultipartUploadResponse());
+    }
+
     private static byte[] Payload(int length)
     {
         var payload = new byte[length];
@@ -1416,8 +1550,11 @@ public class S3ObjectStoreTests
         return copy.ToArray();
     }
 
-    /// <summary>A non-seekable stream over <c>data</c> that returns at most <c>maxChunk</c> bytes per read.</summary>
-    private sealed class ChunkedNonSeekableStream(byte[] data, int maxChunk) : Stream
+    /// <summary>
+    /// A non-seekable stream over <c>data</c> that returns at most <c>maxChunk</c> bytes per read, and throws
+    /// once <c>failAt</c> bytes were read.
+    /// </summary>
+    private sealed class ChunkedNonSeekableStream(byte[] data, int maxChunk, int failAt = int.MaxValue) : Stream
     {
         private int _position;
 
@@ -1437,6 +1574,11 @@ public class S3ObjectStoreTests
 
         public override int Read(byte[] buffer, int offset, int count)
         {
+            if (_position >= failAt)
+            {
+                throw new IOException("source failed");
+            }
+
             var n = Math.Min(Math.Min(count, maxChunk), data.Length - _position);
             Array.Copy(data, _position, buffer, offset, n);
             _position += n;
@@ -1450,6 +1592,9 @@ public class S3ObjectStoreTests
         public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
     }
 
+    /// <summary>
+    /// Helper non-seekable stream for multipart routing tests.
+    /// </summary>
     private sealed class NonSeekableStream : Stream
     {
         public override bool CanRead => true;
