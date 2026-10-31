@@ -29,6 +29,9 @@ namespace Compendium.Adapters.S3.Storage;
 /// </para>
 /// <para>
 /// Multipart upload is automatic above <see cref="S3Options.MultipartThresholdBytes"/>.
+/// Non-seekable streams, whose length is unknown up front, are read one 5 MiB part ahead: one that ends
+/// within it is sent as a single <c>PUT</c> of known length, a longer one multipart, so memory stays bounded
+/// by one part whatever the stream length.
 /// SSE-S3 (AES-256) and SSE-KMS encryption are propagated to every <c>PUT</c>.
 /// </para>
 /// </remarks>
@@ -98,9 +101,14 @@ public sealed class S3ObjectStore : IObjectStore
                 await PutMultipartAsync(storageKey, content, metadata, cancellationToken)
                     .ConfigureAwait(false);
             }
-            else
+            else if (content.CanSeek)
             {
                 await PutSinglePartAsync(storageKey, content, metadata, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            else
+            {
+                await PutNonSeekableAsync(storageKey, content, metadata, cancellationToken)
                     .ConfigureAwait(false);
             }
 
@@ -360,8 +368,7 @@ public sealed class S3ObjectStore : IObjectStore
     {
         if (!content.CanSeek)
         {
-            // Non-seekable streams must use single-shot upload : we cannot know
-            // the length up front.
+            // The length is unknown up front: PutNonSeekableAsync decides after reading one part.
             return false;
         }
 
@@ -388,11 +395,35 @@ public sealed class S3ObjectStore : IObjectStore
         await _s3.PutObjectAsync(request, cancellationToken).ConfigureAwait(false);
     }
 
-    private async Task PutMultipartAsync(
+    private async Task PutNonSeekableAsync(
         string storageKey,
         Stream content,
         ObjectMetadata? metadata,
         CancellationToken cancellationToken)
+    {
+        // The SDK cannot send a stream of unknown length in one PUT ("Could not determine content length").
+        // Read one part ahead: a stream that ends within it goes as a single PUT of known length, a longer one
+        // multipart, starting with that part.
+        var buffer = new byte[MultipartChunkBytes];
+        var read = await FillBufferAsync(content, buffer, cancellationToken).ConfigureAwait(false);
+        if (read < buffer.Length)
+        {
+            using var single = new MemoryStream(buffer, 0, read, writable: false);
+            await PutSinglePartAsync(storageKey, single, metadata, cancellationToken).ConfigureAwait(false);
+            return;
+        }
+
+        await PutMultipartAsync(storageKey, content, metadata, cancellationToken, buffer, read)
+            .ConfigureAwait(false);
+    }
+
+    private async Task PutMultipartAsync(
+        string storageKey,
+        Stream content,
+        ObjectMetadata? metadata,
+        CancellationToken cancellationToken,
+        byte[]? firstPart = null,
+        int firstPartLength = 0)
     {
         var initiateRequest = new InitiateMultipartUploadRequest
         {
@@ -411,13 +442,16 @@ public sealed class S3ObjectStore : IObjectStore
 
         try
         {
-            var buffer = new byte[MultipartChunkBytes];
+            var buffer = firstPart ?? new byte[MultipartChunkBytes];
+            var pending = firstPartLength;
             var partNumber = 1;
 
             while (true)
             {
-                var read = await FillBufferAsync(content, buffer, cancellationToken)
-                    .ConfigureAwait(false);
+                var read = pending > 0
+                    ? pending
+                    : await FillBufferAsync(content, buffer, cancellationToken).ConfigureAwait(false);
+                pending = 0;
                 if (read == 0)
                 {
                     break;
